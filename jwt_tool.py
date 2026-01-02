@@ -57,6 +57,7 @@ except:
 # CONSTANTS
 DEFAULT_RATE_LIMIT  = 999999999
 DEFAULT_RATE_PERIOD = 60
+REFRESH_TOKEN_WINDOW_SECONDS = 60
 
 def cprintc(textval, colval):
     if not args.bare:
@@ -179,6 +180,101 @@ def sendToken(token, cookiedict, track, headertoken="", postdata=None):
         cprintc("[ERROR] ProxyError - check proxy is up and not set to tamper with requests\n(If proxy is not needed disable this with -np on the commandline.)\n"+str(err), "red")
         exit(1)
 
+def extract_token_from_response(response):
+    token_pattern = r'eyJ[A-Za-z0-9_\/+-]*\.eyJ[A-Za-z0-9_\/+-]*\.[A-Za-z0-9._\/+-]*'
+    response_text = response.text
+    response_headers = "\n".join([f"{name}: {value}" for name, value in response.headers.items()])
+    response_cookies = "; ".join([f"{name}={value}" for name, value in response.cookies.items()])
+    combined_response = "\n".join([response_text, response_headers, response_cookies])
+    matches = re.findall(token_pattern, combined_response)
+    if matches:
+        return matches[0]
+    return ""
+
+def build_refresh_request(token):
+    headers = {'User-agent': config['customising']['useragent']+" jwt_tool-refresh"}
+    if args.headers:
+        for eachHeader in args.headers:
+            try:
+                header_sub = re.sub(r'eyJ[A-Za-z0-9_\/+-]*\.eyJ[A-Za-z0-9_\/+-]*\.[A-Za-z0-9._\/+-]*', token, eachHeader)
+                headerName, headerVal = header_sub.split(":", 1)
+                headers[headerName] = headerVal.lstrip(" ")
+            except:
+                pass
+    cookie_data = config['argvals']['cookies']
+    if cookie_data:
+        cookie_data = re.sub(r'eyJ[A-Za-z0-9_\/+-]*\.eyJ[A-Za-z0-9_\/+-]*\.[A-Za-z0-9._\/+-]*', token, cookie_data)
+    try:
+        cookiedict = parse_dict_cookies(cookie_data)
+    except:
+        cookiedict = {}
+    postdata = config['argvals']['postData']
+    if postdata:
+        postdata = re.sub(r'eyJ[A-Za-z0-9_\/+-]*\.eyJ[A-Za-z0-9_\/+-]*\.[A-Za-z0-9._\/+-]*', token, postdata)
+    return headers, cookiedict, postdata
+
+def request_refresh_token(token):
+    refresh_url = args.refresh_token_url
+    if not refresh_url:
+        return ""
+    method = (args.refresh_token_method or "POST").upper()
+    headers, cookiedict, postdata = build_refresh_request(token)
+    if config['services']['redir'] == "True":
+        redirBool = True
+    else:
+        redirBool = False
+    proxies = False
+    if config['services']['proxy'] != "False":
+        proxies = {'http': 'http://'+config['services']['proxy'], 'https': 'http://'+config['services']['proxy']}
+    if method in ["GET", "HEAD"]:
+        postdata = None
+    elif postdata == "":
+        postdata = None
+    try:
+        if proxies:
+            response = requests.request(method, refresh_url, data=postdata, headers=headers, cookies=cookiedict, proxies=proxies, verify=False, allow_redirects=redirBool)
+        else:
+            response = requests.request(method, refresh_url, data=postdata, headers=headers, cookies=cookiedict, proxies=False, verify=False, allow_redirects=redirBool)
+    except requests.exceptions.ProxyError as err:
+        cprintc("[ERROR] ProxyError while refreshing token - check proxy settings\n"+str(err), "red")
+        return ""
+    refreshed_token = extract_token_from_response(response)
+    if not refreshed_token:
+        cprintc("[-] Token refresh request completed, but no JWT was found in the response.", "red")
+        return ""
+    if not args.bare:
+        cprintc("[+] Refreshed token:\n"+refreshed_token, "green")
+    else:
+        print(refreshed_token)
+    return refreshed_token
+
+def refresh_token_if_needed(token):
+    if not args.refresh_token_url:
+        return token
+    try:
+        head_b64, payl_b64, sig = token.split(".", 2)
+    except:
+        return token
+    try:
+        payl = base64.urlsafe_b64decode(payl_b64 + "=" * (-len(payl_b64) % 4))
+        paylDict = json.loads(payl, object_pairs_hook=OrderedDict)
+    except:
+        return token
+    exp_val = paylDict.get("exp")
+    if exp_val is None:
+        return token
+    try:
+        exp_val = int(exp_val)
+    except:
+        return token
+    nowtime = int(datetime.now().timestamp())
+    if exp_val - nowtime > REFRESH_TOKEN_WINDOW_SECONDS:
+        return token
+    refreshed_token = request_refresh_token(token)
+    if refreshed_token:
+        return refreshed_token
+    return token
+
 def parse_dict_cookies(value):
     cookiedict = {}
     for item in value.split(';'):
@@ -207,6 +303,7 @@ def jwtOut(token, fromMod, desc=""):
     idFrag = genTime+str(token)
     logID = "jwttool_"+hashlib.md5(idFrag.encode()).hexdigest()
     if config['argvals']['targetUrl'] != "":
+        token = refresh_token_if_needed(token)
         curTargetUrl = config['argvals']['targetUrl']
         p = re.compile(r'eyJ[A-Za-z0-9_\/+-]*\.eyJ[A-Za-z0-9_\/+-]*\.[A-Za-z0-9._\/+-]*')
 
@@ -1867,6 +1964,10 @@ if __name__ == '__main__':
                         help="request headers to send with the forged HTTP request (can be used multiple times for additional headers)")
     parser.add_argument("-pd", "--postdata", action="store",
                         help="text string that contains all the data to be sent in a POST request")
+    parser.add_argument("--refresh-token-url", action="store",
+                        help="URL to refresh tokens when the current token is within 60 seconds of expiring")
+    parser.add_argument("--refresh-token-method", action="store", default="POST",
+                        help="HTTP method to use for token refresh requests (default: POST)")
     parser.add_argument("-cv", "--canaryvalue", action="store",
                         help="text string that appears in response for valid token (e.g. \"Welcome, ticarpi\")")
     parser.add_argument("-np", "--noproxy", action="store_true",
