@@ -1871,6 +1871,8 @@ if __name__ == '__main__':
                         help="text string that appears in response for valid token (e.g. \"Welcome, ticarpi\")")
     parser.add_argument("-np", "--noproxy", action="store_true",
                         help="disable proxy for current request (change in jwtconf.ini if permanent)")
+    parser.add_argument("--proxy", action="store",
+                        help="proxy to use for current request, e.g. 127.0.0.1:8080")
     parser.add_argument("-nr", "--noredir", action="store_true",
                         help="disable redirects for current request (change in jwtconf.ini if permanent)")
     parser.add_argument("-M", "--mode", action="store",
@@ -2140,6 +2142,8 @@ if __name__ == '__main__':
         config['argvals']['postData'] = args.postdata.replace('%', '%%')
     if args.canaryvalue:
         config['argvals']['canaryvalue'] = args.canaryvalue
+    if args.proxy:
+        config['services']['proxy'] = args.proxy
     if args.noproxy:
         config['services']['proxy'] = "False"
     if args.noredir:
